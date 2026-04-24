@@ -1,0 +1,72 @@
+audio:
+  sample_rate: 44100
+  chunk_seconds: 5.0
+  chunk_samples: 220500
+  hop_samples: 110250
+  n_fft: 2048
+  hop_length: 512
+  n_mels: 128
+
+vae:
+  checkpoint: "cvssp/audioldm2"
+  latent_channels: 4
+  latent_freq: 16
+  latent_time: 54
+
+clap:
+  checkpoint: "./checkpoints/clap/music_audioset_epoch_15_esc_90.14.pt"
+  embed_dim: 512
+
+unet:
+  base_channels: 64
+  channel_multipliers: [1, 2, 4, 8]
+  attention_heads: 8
+  timestep_embed_dim: 256
+  cond_dim: 768
+
+diffusion:
+  num_timesteps: 1000
+  beta_start: 0.0001
+  beta_end: 0.02
+  schedule: "linear"
+  inference_steps: 50
+
+training:
+  batch_size: 8
+  lr: 2.0e-4
+  weight_decay: 1.0e-4
+  grad_clip: 1.0
+  epochs: 100
+  warmup_steps: 1000
+  checkpoint_every: 5
+  eval_every: 10
+
+augmentation:
+  pitch_shift_prob: 0.3
+  pitch_shift_range_semitones: 7
+  pitch_skip_stems: ["drums", "percussion"]
+  time_stretch_prob: 0.3
+  time_stretch_range: [0.9, 1.1]
+  volume_jitter_prob: 0.5
+  volume_jitter_db: 3.0
+  synthetic_mix_prob: 0.4
+  effects_chain_prob: 0.4
+
+triplets:
+  negative_prob: 0.15
+  multi_stem_prob: 0.30
+  remove_framing_prob: 0.15
+
+losses:
+  smoothness_weight: 0.01
+  consistency_weight: 0.1
+  consistency_batch_prob: 0.15
+  consistency_max_t: 200
+  consistency_stem_cap: 4
+
+paths:
+  moisesdb_root: "./datasets/moisesdb"
+  musdb_root: "./datasets/musdb18hq"
+  checkpoint_dir: "./checkpoints"
+  log_dir: "./logs"
+  output_dir: "./outputs"
