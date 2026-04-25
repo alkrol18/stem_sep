@@ -13,3 +13,9 @@ mir_eval>=0.7
 pyyaml>=6.0
 tqdm>=4.65.0
 tensorboard>=2.14.0
+# Stable Audio Open VAE — waveform-domain 44.1 kHz autoencoder.
+# Requires accepting the license at https://huggingface.co/stabilityai/stable-audio-open-1.0
+# and setting HF_TOKEN before running.
+# Compatible with torch>=2.0; no conflict with torch 2.5.1+cu121.
+stable-audio-tools>=1.0.0
+einops>=0.7.0

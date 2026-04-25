@@ -23,18 +23,17 @@ def scan(root: str) -> list[dict]:
     for track_dir in sorted(root_path.iterdir()):
         if not track_dir.is_dir():
             continue
-        wav_files = list(track_dir.glob("*.wav"))
-        if not wav_files:
-            continue
-        mixture_path = track_dir / "mixture.wav"
         stems = []
-        for wav in wav_files:
-            if wav.name == "mixture.wav":
+        for stem_dir in sorted(track_dir.iterdir()):
+            if not stem_dir.is_dir():
                 continue
-            stem_name = wav.stem       # filename without extension
-            stems.append({"name": stem_name, "path": str(wav)})
+            wav_files = list(stem_dir.glob("*.wav"))
+            if not wav_files:
+                continue
+            stems.append({"name": stem_dir.name, "path": str(wav_files[0])})
         if not stems:
             continue
+        mixture_path = track_dir / "mixture.wav"
         tracks.append({
             "track_id": track_dir.name,
             "mixture_path": str(mixture_path) if mixture_path.exists() else None,

@@ -1,42 +1,12 @@
-# Datasets (too large, not code)
-data/
-datasets/
-
-# Model weights & checkpoints (large binary files)
-checkpoints/
-models/*.pt
-models/*.pth
-models/*.bin
-models/*.safetensors
-
-# Training outputs & logs
-outputs/
-logs/
-
-# Python cache
+OLD_stem_sep_(pre-DCC_work)/
+stem_sep_NEW/
+*.tar.gz
+*.bak
+backups/
 __pycache__/
 *.pyc
 *.pyo
-*.pyd
-.Python
-
-# Virtual environments
-venv/
-.venv/
-env/
-
-# Jupyter
-.ipynb_checkpoints/
-*.ipynb
-
-# OS
+*.pt
+*.pth
+*.egg-info/
 .DS_Store
-Thumbs.db
-
-# Editor
-.vscode/
-.idea/
-
-# Secrets / env
-.env
-*.env

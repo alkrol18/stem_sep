@@ -45,18 +45,22 @@ class NoiseSchedule:
         """
         Forward diffusion: x_t = sqrt(ā_t) * x0 + sqrt(1-ā_t) * ε
         Returns (x_t, noise).
+        Works for any x0 dimensionality (3-D latents or 4-D mel latents).
         """
         if noise is None:
             noise = torch.randn_like(x0)
-        sqrt_ab = self.sqrt_alpha_bars[t][:, None, None, None]
-        sqrt_1mab = self.sqrt_one_minus_alpha_bars[t][:, None, None, None]
+        # Reshape (B,) → (B, 1, 1, ...) to broadcast over all non-batch dims.
+        view = (x0.shape[0],) + (1,) * (x0.ndim - 1)
+        sqrt_ab   = self.sqrt_alpha_bars[t].view(*view)
+        sqrt_1mab = self.sqrt_one_minus_alpha_bars[t].view(*view)
         return sqrt_ab * x0 + sqrt_1mab * noise, noise
 
     def predict_x0_from_noise(
         self, x_t: torch.Tensor, t: torch.Tensor, pred_noise: torch.Tensor
     ) -> torch.Tensor:
-        sqrt_ab = self.sqrt_alpha_bars[t][:, None, None, None]
-        sqrt_1mab = self.sqrt_one_minus_alpha_bars[t][:, None, None, None]
+        view      = (x_t.shape[0],) + (1,) * (x_t.ndim - 1)
+        sqrt_ab   = self.sqrt_alpha_bars[t].view(*view)
+        sqrt_1mab = self.sqrt_one_minus_alpha_bars[t].view(*view)
         return (x_t - sqrt_1mab * pred_noise) / sqrt_ab.clamp(min=1e-8)
 
 

@@ -1,9 +1,20 @@
-"""Dual-encoder UNet for query-conditioned stem separation."""
+"""Dual-encoder UNet for query-conditioned stem separation.
+
+Stable Audio Open VAE produces 1-D latents (B, 64, T_lat).  This UNet uses a
+"1D-in-2D" adapter: the latent is unsqueezed to (B, 64, 1, T_lat) so the
+existing Conv2d / GroupNorm blocks work unchanged.  Pooling and upsampling are
+restricted to the time axis only (kernel (1,2), stride (1,2)) to avoid
+collapsing the height dimension from 1 to 0.
+
+TODO (long-term): convert all blocks to Conv1d for a cleaner architecture.
+"""
 import torch
 import torch.nn as nn
 
 from models.conv_blocks import ConvBlock, FiLM, TimestepEmbedding
 from models.attention import BottleneckAttention
+
+LATENT_CH = 64   # Stable Audio Open VAE latent channels
 
 
 class EncoderLevel(nn.Module):
@@ -11,7 +22,8 @@ class EncoderLevel(nn.Module):
         super().__init__()
         self.conv = ConvBlock(in_ch, out_ch)
         self.film = FiLM(cond_dim, out_ch) if use_film else None
-        self.pool = nn.MaxPool2d(2)
+        # Time-only pooling: height stays 1, width (time) halves.
+        self.pool = nn.MaxPool2d((1, 2))
 
     def forward(
         self, x: torch.Tensor, cond: torch.Tensor | None = None
@@ -26,7 +38,8 @@ class EncoderLevel(nn.Module):
 class DecoderLevel(nn.Module):
     def __init__(self, in_ch: int, skip_ch: int, out_ch: int, cond_dim: int):
         super().__init__()
-        self.up = nn.ConvTranspose2d(in_ch, in_ch, kernel_size=2, stride=2)
+        # Time-only upsampling to match the time-only pooling in the encoder.
+        self.up = nn.ConvTranspose2d(in_ch, in_ch, kernel_size=(1, 2), stride=(1, 2))
         self.conv = ConvBlock(in_ch + skip_ch, out_ch)
         self.film = FiLM(cond_dim, out_ch)
 
@@ -37,7 +50,7 @@ class DecoderLevel(nn.Module):
         cond: torch.Tensor,
     ) -> torch.Tensor:
         x = self.up(x)
-        # Align spatial dims if odd sizes
+        # Align time dim if odd sizes arise from non-power-of-2 T_lat.
         if x.shape[-2:] != skip.shape[-2:]:
             x = nn.functional.interpolate(x, size=skip.shape[-2:], mode="nearest")
         x = torch.cat([x, skip], dim=1)
@@ -52,7 +65,10 @@ class StemSeparationUNet(nn.Module):
       - mix encoder:  receives mixture latent, no FiLM conditioning
     Bottleneck: BottleneckAttention (stem self-attention + cross-attention to mixture).
     Decoder: FiLM-conditioned, skips from stem encoder.
-    Output: predicted noise matching noisy_stem shape (B, 4, 16, 54).
+
+    Input latents are (B, 64, T_lat) from the Stable Audio Open VAE.
+    They are unsqueezed to (B, 64, 1, T_lat) internally and squeezed back at output.
+    Output: predicted noise (B, 64, T_lat) matching noisy_stem shape.
     """
 
     def __init__(self, cfg: dict):
@@ -66,20 +82,16 @@ class StemSeparationUNet(nn.Module):
 
         channels = [base * m for m in mults]                    # [64,128,256,512]
 
-        # Input projection (noisy stem latent has 4 channels)
-        self.stem_in_proj = nn.Conv2d(4, channels[0], 3, padding=1)
-        self.mix_in_proj = nn.Conv2d(4, channels[0], 3, padding=1)
+        # Input projections: each takes one 64-channel SAO latent.
+        self.stem_in_proj = nn.Conv2d(LATENT_CH, channels[0], 3, padding=1)
+        self.mix_in_proj  = nn.Conv2d(LATENT_CH, channels[0], 3, padding=1)
 
         # Timestep embedding
         self.t_emb = TimestepEmbedding(t_dim)
 
-        # CLAP projection (512 -> t_dim to concat cleanly; kept at 512 width)
-        # cond vector = cat(t_emb, clap_emb) so cond_dim = t_dim + 512
-        # FiLM uses cond_dim directly.
-
-        # Encoders
+        # Encoders (3 levels: channels[1:] = [128, 256, 512])
         self.stem_enc = nn.ModuleList()
-        self.mix_enc = nn.ModuleList()
+        self.mix_enc  = nn.ModuleList()
         in_ch = channels[0]
         for out_ch in channels[1:]:
             self.stem_enc.append(EncoderLevel(in_ch, out_ch, cond_dim, use_film=True))
@@ -89,19 +101,16 @@ class StemSeparationUNet(nn.Module):
         # Bottleneck
         self.bottleneck = BottleneckAttention(channels[-1], heads)
 
-        # Decoder
-        # Skips from stem encoder levels [1..3] in reverse, plus the initial proj
-        skip_channels = [channels[0]] + list(channels[1:])      # [64,128,256,512]
+        # Decoder (skips from stem encoder levels [1..3] in reverse, plus initial proj)
         dec_in_channels = list(reversed(channels))               # [512,256,128,64]
         self.decoder = nn.ModuleList()
         for i in range(len(channels) - 1):
-            d_in = dec_in_channels[i]
-            skip_ch = d_in                  # enc skip at same depth has same channel count
-            d_out = dec_in_channels[i + 1]
-            self.decoder.append(DecoderLevel(d_in, skip_ch, d_out, cond_dim))
+            d_in   = dec_in_channels[i]
+            d_out  = dec_in_channels[i + 1]
+            self.decoder.append(DecoderLevel(d_in, d_in, d_out, cond_dim))
 
-        # Final conv: predict noise for all 4 latent channels
-        self.final_conv = nn.Conv2d(channels[0] + 4, 4, 1)
+        # Final conv: predict noise at full 64-channel latent resolution.
+        self.final_conv = nn.Conv2d(channels[0] + LATENT_CH, LATENT_CH, 1)
 
     def forward(
         self,
@@ -112,29 +121,32 @@ class StemSeparationUNet(nn.Module):
     ) -> torch.Tensor:
         """
         Args:
-            noisy_stem: (B, 4, F, T) noisy stem latent
-            mixture:    (B, 4, F, T) clean mixture latent
+            noisy_stem: (B, 64, T_lat) noisy stem latent
+            mixture:    (B, 64, T_lat) clean mixture latent
             clap_emb:   (B, 512) CLAP conditioning
             t:          (B,) integer timesteps
         Returns:
-            predicted noise (B, 1, F, T) — matches noisy_stem spatial dims
+            predicted noise (B, 64, T_lat) — matches noisy_stem shape
         """
+        # Adapter: treat 1-D latent as 2-D with a single "frequency" row.
+        noisy_stem = noisy_stem.unsqueeze(2)   # (B, 64, 1, T_lat)
+        mixture    = mixture.unsqueeze(2)      # (B, 64, 1, T_lat)
+
         t_emb = self.t_emb(t)                          # (B, t_dim)
-        cond = torch.cat([t_emb, clap_emb], dim=-1)   # (B, cond_dim)
+        cond  = torch.cat([t_emb, clap_emb], dim=-1)   # (B, cond_dim)
 
         # Input projections
-        s = self.stem_in_proj(noisy_stem)              # (B, C0, F, T)
-        m = self.mix_in_proj(mixture)                  # (B, C0, F, T)
+        s = self.stem_in_proj(noisy_stem)              # (B, C0, 1, T_lat)
+        m = self.mix_in_proj(mixture)                  # (B, C0, 1, T_lat)
 
         # Encoder forward passes
-        stem_skips = [s]    # skip at level 0 = input proj output
+        stem_skips = [s]
         for stem_level, mix_level in zip(self.stem_enc, self.mix_enc):
             s, s_skip = stem_level(s, cond)
-            m, _ = mix_level(m, None)
+            m, _      = mix_level(m, None)
             stem_skips.append(s_skip)
-        # stem_skips: [C0_feat, C1_feat, C2_feat, C3_feat] (before pooling)
 
-        # Bottleneck
+        # Bottleneck — operates on (B, C, 1, T) flattened to N=T tokens
         s = self.bottleneck(s, m)
 
         # Decoder
@@ -142,6 +154,8 @@ class StemSeparationUNet(nn.Module):
             skip = stem_skips[-(i + 1)]
             s = dec_level(s, skip, cond)
 
-        # Final skip with original noisy input
-        s = torch.cat([s, noisy_stem], dim=1)
-        return self.final_conv(s)                      # (B, 1, F, T)
+        # Final skip connection with original noisy input
+        s = torch.cat([s, noisy_stem], dim=1)          # (B, C0+64, 1, T_lat)
+        out = self.final_conv(s)                        # (B, 64, 1, T_lat)
+
+        return out.squeeze(2)                           # (B, 64, T_lat)
