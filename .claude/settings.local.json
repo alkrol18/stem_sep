@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m py_compile training/train.py)",
+      "Bash(python -m py_compile training/checkpoint.py)"
+    ]
+  }
+}
