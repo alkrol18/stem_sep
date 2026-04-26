@@ -294,9 +294,9 @@ def train(args):
             # clip_grad_norm_ after backward(), before step() — unchanged
             nn.utils.clip_grad_norm_(model.parameters(), cfg["training"]["grad_clip"])
             optimizer.step()
-            scheduler.step()
             # Feature 1: EMA update every step
             ema.update(model, step)
+            scheduler.step()
 
             writer.add_scalar("loss/train", loss.item(), step)
             writer.add_scalar("lr", scheduler.get_last_lr()[0], step)
@@ -329,6 +329,7 @@ def train(args):
                         "step":            step,
                         "epoch":           epoch,
                     }, best_ckpt)
+                    writer.add_scalar("val/best", best_val, step)
                     print(f"[val] new best {best_val:.4f} → {best_ckpt}", flush=True)
                 else:
                     since_best += 1
